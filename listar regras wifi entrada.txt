@@ -1,0 +1,44 @@
+Add-Type -AssemblyName System.Windows.Forms
+$d = New-Object System.Windows.Forms.SaveFileDialog
+$d.Filter = "Texto (*.txt)|*.txt"
+$d.FileName = "regras_entrada_firewall.txt"
+if ($d.ShowDialog() -eq "OK") {
+    Get-NetFirewallRule -Direction Inbound | Out-File -FilePath $d.FileName -Encoding UTF8 -Width 4096
+    Write-Host "Salvo em: $($d.FileName)"
+}
+
+
+
+abaixo ajusta 
+
+
+# 1. Backup das regras alvo antes de alterar
+$alvos = @(
+    "NETDIS-SSDPSrv-In-UDP-Teredo",
+    "WFDPRINT-SPOOL-In-Active",
+    "WFDPRINT-SCAN-In-Active",
+    "DeliveryOptimization-UDP-In"
+)
+$backupPath = "$env:USERPROFILE\Desktop\firewall_backup_$(Get-Date -Format 'yyyyMMdd_HHmm').json"
+Get-NetFirewallRule -Name $alvos -ErrorAction SilentlyContinue | ConvertTo-Json -Depth 3 | Out-File -FilePath $backupPath -Encoding UTF8
+Write-Host "Backup salvo em: $backupPath" -ForegroundColor Cyan
+
+# 2. Desativar regras de entrada expositivas/desnecessárias
+foreach ($nome in $alvos) {
+    if (Get-NetFirewallRule -Name $nome -ErrorAction SilentlyContinue) {
+        Disable-NetFirewallRule -Name $nome
+        Write-Host "Desativada: $nome" -ForegroundColor Yellow
+    }
+}
+
+# 3. Garantir firewall ativo e bloqueio padrão de entrada em todos os perfis
+Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True -DefaultInboundAction Block -DefaultOutboundAction Allow
+Write-Host "Perfis Domain, Private e Public configurados (Inbound: Block | Outbound: Allow)." -ForegroundColor Green
+
+
+
+reverter em   
+
+
+
+Enable-NetFirewallRule -Name "DeliveryOptimization-UDP-In"
