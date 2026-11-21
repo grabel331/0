@@ -1,0 +1,90 @@
+$relatorio = "$env:USERPROFILE\Desktop\checkup_avancado_win11_$(Get-Date -Format 'yyyyMMdd_HHmm').txt"
+$sb = New-Object System.Text.StringBuilder
+
+function Add-Secao([string]$Titulo) {
+    [void]$sb.AppendLine("`r`n========================================`r`n$Titulo`r`n========================================")
+}
+
+# 1. Portas TCP/UDP em escuta e processo dono
+Add-Secao "1. PORTAS EM ESCUTA (TCP LISTEN / UDP) E PROCESSOS"
+$conexoes = Get-NetUDPEndpoint, (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue) | ForEach-Object {
+    $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
+    [PSCustomObject]@{
+        Proto       = if ($_.State) { "TCP" } else { "UDP" }
+        LocalAddr   = $_.LocalAddress
+        LocalPort   = $_.LocalPort
+        PID         = $_.OwningProcess
+        Processo    = $proc.ProcessName
+        CaminhoExe  = $proc.Path
+    }
+} | Sort-Object Proto, LocalPort
+[void]$sb.AppendLine(($conexoes | Format-Table -AutoSize | Out-String))
+
+# 2. Itens de inicializacao automatica (Run / RunOnce / Startup)
+Add-Secao "2. INICIALIZACAO AUTOMATICA (REGISTRO E PASTA INICIAR)"
+$runKeys = @(
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
+    "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+    "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce"
+)
+foreach ($k in $runKeys) {
+    if (Test-Path $k) {
+        $props = Get-ItemProperty -Path $k
+        $props.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" } | ForEach-Object {
+            [void]$sb.AppendLine("[$k] $($_.Name) -> $($_.Value)")
+        }
+    }
+}
+$startupPastas = @("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup", "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup")
+foreach ($p in $startupPastas) {
+    if (Test-Path $p) {
+        Get-ChildItem -Path $p -ErrorAction SilentlyContinue | ForEach-Object {
+            [void]$sb.AppendLine("[StartupFolder] $($_.FullName)")
+        }
+    }
+}
+
+# 3. Tarefas agendadas ativas fora do padrao da Microsoft
+Add-Secao "3. TAREFAS AGENDADAS ATIVAS (NAO-MICROSOFT)"
+$tarefas = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
+    $_.State -eq "Ready" -and $_.TaskPath -notlike "\Microsoft\*"
+} | ForEach-Object {
+    $acao = ($_.Actions | ForEach-Object { "$($_.Execute) $($_.Arguments)" }) -join " | "
+    [PSCustomObject]@{
+        Caminho = $_.TaskPath
+        Nome    = $_.TaskName
+        Acao    = $acao
+    }
+}
+[void]$sb.AppendLine(($tarefas | Format-Table -AutoSize | Out-String))
+
+# 4. Servicos em execucao cujo executavel nao esta em C:\Windows\
+Add-Secao "4. SERVICOS RODANDO FORA DE C:\WINDOWS"
+$servicos = Get-CimInstance Win32_Service -Filter "State = 'Running'" | Where-Object {
+    $_.PathName -and ($_.PathName -notmatch "(?i)^`"?C:\\Windows\\")
+} | Select-Object Name, DisplayName, StartMode, PathName
+[void]$sb.AppendLine(($servicos | Format-Table -AutoSize | Out-String))
+
+# 5. Politicas de PowerShell (ExecutionPolicy, Transcription, Module/ScriptBlock Logging)
+Add-Secao "5. POLITICAS E LOGS DO POWERSHELL"
+[void]$sb.AppendLine("ExecutionPolicy (MachinePolicy/UserPolicy/CurrentUser/LocalMachine):")
+[void]$sb.AppendLine((Get-ExecutionPolicy -List | Format-Table -AutoSize | Out-String))
+$psLogPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell"
+if (Test-Path $psLogPath) {
+    Get-ChildItem -Path $psLogPath -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+        [void]$sb.AppendLine($_.PSPath)
+        $_.Property | ForEach-Object { [void]$sb.AppendLine("  $_ = $((Get-ItemProperty $_.PSPath).$_)") }
+    }
+} else {
+    [void]$sb.AppendLine("Nenhuma politica centralizada de log do PowerShell encontrada em HKLM:\SOFTWARE\Policies\...")
+}
+
+# 6. Contas locais e membros do grupo Administradores
+Add-Secao "6. CONTAS LOCAIS E ADMINISTRADORES"
+[void]$sb.AppendLine((Get-LocalUser | Select-Object Name, Enabled, LastLogon, PasswordRequired | Format-Table -AutoSize | Out-String))
+[void]$sb.AppendLine("Membros do grupo Administradores:")
+[void]$sb.AppendLine((Get-LocalGroupMember -Group "Administradores" -ErrorAction SilentlyContinue | Select-Object Name, ObjectClass, PrincipalSource | Format-Table -AutoSize | Out-String))
+
+$sb.ToString() | Out-File -FilePath $relatorio -Encoding UTF8 -Width 4096
+Write-Host "Checkup concluido! Relatorio salvo em: $relatorio" -ForegroundColor Green
